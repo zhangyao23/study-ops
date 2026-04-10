@@ -1,0 +1,5 @@
+name = "study-ops-manual"
+mode = "manual"
+entry = "node --no-warnings src/index.js"
+working_directory = "."
+notes = "Manual local CLI workflow. Keep review outputs in artifacts/outputs and database files in data/processed."
