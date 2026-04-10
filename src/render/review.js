@@ -25,8 +25,23 @@ function renderSection(title, items, formatter) {
   ];
 }
 
+function renderFrontmatter(summary) {
+  return [
+    "---",
+    "kind: study-review",
+    `review_date: ${summary.date}`,
+    `source_project: ${summary.sourceProject || "study-ops"}`,
+    `completed_count: ${summary.completedCount}`,
+    `rescheduled_count: ${summary.rescheduledCount}`,
+    `unfinished_count: ${summary.unfinishedCount}`,
+    "---",
+    ""
+  ];
+}
+
 function renderReviewMarkdown(summary) {
   const lines = [
+    ...renderFrontmatter(summary),
     `# Study Review ${summary.date}`,
     "",
     `- Completed: ${summary.completedCount}`,

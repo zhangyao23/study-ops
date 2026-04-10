@@ -2,7 +2,11 @@
 
 ## Goal
 
-交付一个纯本地任务与复盘 CLI：SQLite 负责任务、事件和复盘索引，Markdown 负责每日复盘导出；第二轮补归档与周期任务。
+Deliver a local CLI for task tracking and daily review generation.
+
+- SQLite stores tasks, state transitions, recurring task lineage, and review rows.
+- Markdown review files remain simple enough to read directly.
+- Review output also acts as a stable explicit sync source for `research-vault`.
 
 ## Commands
 
@@ -16,9 +20,17 @@
 - `review [--date <yyyy-mm-dd>]`
 - `stats`
 
-## State flow
+## Review contract
 
-- 默认新任务为 `open`
-- `done` 将任务标记完成；若任务带 `repeat_rule`，同时生成下一条 `open` 任务
-- `archive` 只允许处理 `done` 任务
-- 当前版本仍不暴露硬删除
+- Review file path is fixed as `artifacts/outputs/review-YYYY-MM-DD.md`.
+- Re-running `review` for the same day updates the same file.
+- Frontmatter fields are fixed: `kind`, `review_date`, `source_project`, `completed_count`, `rescheduled_count`, `unfinished_count`.
+- Body sections remain `Completed`, `Rescheduled`, and `Unfinished`.
+- `review` does not push or copy files into `research-vault`; sync remains explicit on the consumer side.
+
+## State Flow
+
+- New tasks start as `open`.
+- `done` marks the task complete and spawns the next task when a repeat rule exists.
+- `archive` only accepts `done` tasks.
+- Hard delete is still not exposed.

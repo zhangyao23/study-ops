@@ -422,6 +422,7 @@ function generateReview(context, { date = formatLocalDate(), generatedAt = nowIs
 
     const summary = {
       date: reviewDate,
+      sourceProject: "study-ops",
       completed,
       rescheduled,
       unfinished,

@@ -162,7 +162,7 @@ test("markTaskDone rescheduleTask and archiveTask update state transitions", () 
   });
 });
 
-test("generateReview writes markdown output and stores review metadata", () => {
+test("generateReview writes stable frontmatter and reuses the same daily file path", () => {
   withTempContext((context) => {
     const reviewDate = "2026-04-10";
     const nextDay = shiftDate(reviewDate, 1);
@@ -208,8 +208,26 @@ test("generateReview writes markdown output and stores review metadata", () => {
     }
 
     const markdown = fs.readFileSync(outputPath, "utf8");
+    if (!markdown.startsWith("---\nkind: study-review\n")) {
+      throw new Error(`Expected study-review frontmatter, received ${markdown}`);
+    }
+    if (!markdown.includes("review_date: 2026-04-10")
+      || !markdown.includes("source_project: study-ops")
+      || !markdown.includes("completed_count: 1")
+      || !markdown.includes("rescheduled_count: 1")
+      || !markdown.includes("unfinished_count: 1")) {
+      throw new Error(`Unexpected review frontmatter fields: ${markdown}`);
+    }
     if (!markdown.includes("# Study Review 2026-04-10")) {
       throw new Error(`Unexpected markdown output: ${markdown}`);
+    }
+
+    const repeated = generateReview(context, {
+      date: reviewDate,
+      generatedAt: "2026-04-10T20:00:00.000Z"
+    });
+    if (repeated.filePath !== summary.filePath) {
+      throw new Error(`Expected stable review path, received ${repeated.filePath} and ${summary.filePath}`);
     }
 
     const db = openDatabase(context);
