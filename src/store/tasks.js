@@ -2,12 +2,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { CliError } = require("../lib/errors");
 const { relativeToProject, ensureProjectDirectories } = require("../lib/paths");
-const { dayFromIso, formatLocalDate, nowIso, requireDateString } = require("../lib/dates");
+const { advanceDate, dayFromIso, formatLocalDate, nowIso, requireDateString } = require("../lib/dates");
 const { openDatabase, withTransaction } = require("./db");
 const { renderReviewMarkdown } = require("../render/review");
 
 const VALID_PRIORITIES = new Set(["low", "medium", "high"]);
 const VALID_STATUSES = new Set(["open", "done", "archived"]);
+const VALID_REPEAT_RULES = new Set(["daily", "weekly", "monthly"]);
 
 function ensurePriority(priority) {
   const normalized = String(priority || "medium").trim().toLowerCase();
@@ -24,6 +25,17 @@ function ensureStatus(status) {
   const normalized = String(status).trim().toLowerCase();
   if (!VALID_STATUSES.has(normalized)) {
     throw new CliError(`Unsupported status: ${status}. Expected one of: ${[...VALID_STATUSES].join(", ")}.`, 2);
+  }
+  return normalized;
+}
+
+function ensureRepeatRule(repeatRule) {
+  if (repeatRule === null || repeatRule === undefined || repeatRule === "") {
+    return null;
+  }
+  const normalized = String(repeatRule).trim().toLowerCase();
+  if (!VALID_REPEAT_RULES.has(normalized)) {
+    throw new CliError(`Unsupported repeat rule: ${repeatRule}. Expected one of: ${[...VALID_REPEAT_RULES].join(", ")}.`, 2);
   }
   return normalized;
 }
@@ -54,7 +66,9 @@ function hydrateTask(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
-    archivedAt: row.archived_at
+    archivedAt: row.archived_at,
+    repeatRule: row.repeat_rule,
+    sourceTaskId: row.source_task_id
   };
 }
 
@@ -82,6 +96,39 @@ function recordEvent(db, taskId, eventType, payload, eventAt) {
   `).run(taskId, eventType, eventAt, JSON.stringify(payload || {}));
 }
 
+function insertTaskRecord(db, task) {
+  db.prepare(`
+    INSERT INTO tasks (
+      title,
+      project_name,
+      due_date,
+      priority,
+      status,
+      created_at,
+      updated_at,
+      completed_at,
+      archived_at,
+      repeat_rule,
+      source_task_id
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    task.title,
+    task.projectName,
+    task.dueDate,
+    task.priority,
+    task.status,
+    task.createdAt,
+    task.updatedAt,
+    task.completedAt,
+    task.archivedAt,
+    task.repeatRule,
+    task.sourceTaskId
+  );
+
+  return db.prepare("SELECT last_insert_rowid() AS id").get().id;
+}
+
 function compareOpenTasks(left, right) {
   const leftDue = left.dueDate || "9999-12-31";
   const rightDue = right.dueDate || "9999-12-31";
@@ -97,29 +144,43 @@ function compareOpenTasks(left, right) {
   return left.createdAt.localeCompare(right.createdAt);
 }
 
-function createTask(context, { title, projectName = null, dueDate = null, priority = "medium", createdAt = nowIso() }) {
+function createTask(context, { title, projectName = null, dueDate = null, priority = "medium", repeatRule = null, createdAt = nowIso(), sourceTaskId = null }) {
   ensureProjectDirectories(context);
   const db = openDatabase(context);
 
   try {
     const normalizedPriority = ensurePriority(priority);
+    const normalizedRepeatRule = ensureRepeatRule(repeatRule);
     const normalizedDueDate = dueDate ? requireDateString(dueDate, "due date") : null;
     const trimmedTitle = String(title || "").trim();
     if (!trimmedTitle) {
       throw new CliError("Task title is required.", 2);
     }
+    if (normalizedRepeatRule && !normalizedDueDate) {
+      throw new CliError("Recurring tasks require --due yyyy-mm-dd.", 2);
+    }
 
     const task = withTransaction(db, () => {
-      db.prepare(`
-        INSERT INTO tasks (title, project_name, due_date, priority, status, created_at, updated_at, completed_at, archived_at)
-        VALUES (?, ?, ?, ?, 'open', ?, ?, NULL, NULL)
-      `).run(trimmedTitle, projectName ? String(projectName).trim() : null, normalizedDueDate, normalizedPriority, createdAt, createdAt);
+      const insertedId = insertTaskRecord(db, {
+        title: trimmedTitle,
+        projectName: projectName ? String(projectName).trim() : null,
+        dueDate: normalizedDueDate,
+        priority: normalizedPriority,
+        status: "open",
+        createdAt,
+        updatedAt: createdAt,
+        completedAt: null,
+        archivedAt: null,
+        repeatRule: normalizedRepeatRule,
+        sourceTaskId
+      });
 
-      const insertedId = db.prepare("SELECT last_insert_rowid() AS id").get().id;
       recordEvent(db, insertedId, "add", {
         projectName: projectName ? String(projectName).trim() : null,
         dueDate: normalizedDueDate,
-        priority: normalizedPriority
+        priority: normalizedPriority,
+        repeatRule: normalizedRepeatRule,
+        sourceTaskId
       }, createdAt);
       return findTask(db, insertedId);
     });
@@ -137,12 +198,20 @@ function listTasks(context, { projectName = null, status = null } = {}) {
     const normalizedProject = projectName ? String(projectName).trim() : null;
 
     return fetchAllTasks(db)
-      .filter((task) => !task.archivedAt)
+      .filter((task) => {
+        if (normalizedStatus === "archived") {
+          return task.status === "archived" || Boolean(task.archivedAt);
+        }
+        return !task.archivedAt;
+      })
       .filter((task) => !normalizedStatus || task.status === normalizedStatus)
       .filter((task) => !normalizedProject || task.projectName === normalizedProject)
       .sort((left, right) => {
         if ((normalizedStatus || left.status) === "done" && (normalizedStatus || right.status) === "done") {
           return `${right.completedAt || right.updatedAt}`.localeCompare(left.completedAt || left.updatedAt);
+        }
+        if ((normalizedStatus || left.status) === "archived" && (normalizedStatus || right.status) === "archived") {
+          return `${right.archivedAt || right.updatedAt}`.localeCompare(left.archivedAt || left.updatedAt);
         }
         return compareOpenTasks(left, right);
       });
@@ -204,6 +273,40 @@ function getNextTask(context, referenceDate = formatLocalDate()) {
   return tasks[0] || null;
 }
 
+function spawnRecurringTask(db, task, spawnedAt) {
+  if (!task.repeatRule) {
+    return null;
+  }
+
+  const nextDueDate = advanceDate(task.dueDate, task.repeatRule);
+  const insertedId = insertTaskRecord(db, {
+    title: task.title,
+    projectName: task.projectName,
+    dueDate: nextDueDate,
+    priority: task.priority,
+    status: "open",
+    createdAt: spawnedAt,
+    updatedAt: spawnedAt,
+    completedAt: null,
+    archivedAt: null,
+    repeatRule: task.repeatRule,
+    sourceTaskId: task.id
+  });
+  recordEvent(db, insertedId, "add", {
+    projectName: task.projectName,
+    dueDate: nextDueDate,
+    priority: task.priority,
+    repeatRule: task.repeatRule,
+    sourceTaskId: task.id
+  }, spawnedAt);
+  recordEvent(db, task.id, "spawn-next", {
+    nextTaskId: insertedId,
+    nextDueDate,
+    repeatRule: task.repeatRule
+  }, spawnedAt);
+  return findTask(db, insertedId);
+}
+
 function markTaskDone(context, taskId, { completedAt = nowIso() } = {}) {
   const db = openDatabase(context);
   try {
@@ -219,7 +322,12 @@ function markTaskDone(context, taskId, { completedAt = nowIso() } = {}) {
         WHERE id = ?
       `).run(completedAt, completedAt, task.id);
       recordEvent(db, task.id, "done", { completedAt }, completedAt);
-      return findTask(db, task.id);
+      const completedTask = findTask(db, task.id);
+      const spawnedTask = task.repeatRule ? spawnRecurringTask(db, completedTask, completedAt) : null;
+      return {
+        ...completedTask,
+        spawnedTask
+      };
     });
   } finally {
     db.close();
@@ -246,6 +354,29 @@ function rescheduleTask(context, taskId, { dueDate, changedAt = nowIso() }) {
         fromDueDate: task.dueDate,
         toDueDate: normalizedDueDate
       }, changedAt);
+      return findTask(db, task.id);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+function archiveTask(context, taskId, { archivedAt = nowIso() } = {}) {
+  const db = openDatabase(context);
+
+  try {
+    const task = findTask(db, taskId);
+    if (task.status !== "done") {
+      throw new CliError(`Only done tasks can be archived. Current status: ${task.status}.`, 2);
+    }
+
+    return withTransaction(db, () => {
+      db.prepare(`
+        UPDATE tasks
+        SET status = 'archived', updated_at = ?, archived_at = ?
+        WHERE id = ?
+      `).run(archivedAt, archivedAt, task.id);
+      recordEvent(db, task.id, "archive", { archivedAt }, archivedAt);
       return findTask(db, task.id);
     });
   } finally {
@@ -368,6 +499,8 @@ function buildStats(context) {
 
 module.exports = {
   VALID_PRIORITIES,
+  VALID_REPEAT_RULES,
+  archiveTask,
   buildStats,
   createTask,
   generateReview,

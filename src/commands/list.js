@@ -14,6 +14,7 @@ function listCommand({ context, stdout, projectName, status }) {
     lines.push(`  project: ${task.projectName || "unassigned"}`);
     lines.push(`  due: ${task.dueDate || "none"}`);
     lines.push(`  priority: ${task.priority}`);
+    lines.push(`  repeat: ${task.repeatRule || "none"}`);
     lines.push(`  status: ${task.status}`);
   });
   lines.push("");

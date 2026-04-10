@@ -1,6 +1,13 @@
 const { DatabaseSync } = require("node:sqlite");
 const { ensureProjectDirectories } = require("../lib/paths");
 
+function ensureColumn(db, tableName, columnName, columnDefinition) {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  if (!columns.some((column) => column.name === columnName)) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
+  }
+}
+
 function openDatabase(context) {
   ensureProjectDirectories(context);
 
@@ -17,7 +24,9 @@ function openDatabase(context) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       completed_at TEXT,
-      archived_at TEXT
+      archived_at TEXT,
+      repeat_rule TEXT,
+      source_task_id INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS task_events (
@@ -43,6 +52,9 @@ function openDatabase(context) {
     CREATE INDEX IF NOT EXISTS idx_task_events_task_id ON task_events(task_id);
     CREATE INDEX IF NOT EXISTS idx_task_events_type ON task_events(event_type);
   `);
+
+  ensureColumn(db, "tasks", "repeat_rule", "TEXT");
+  ensureColumn(db, "tasks", "source_task_id", "INTEGER");
 
   return db;
 }

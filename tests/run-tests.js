@@ -2,9 +2,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createAppContext, ensureProjectDirectories } = require("../src/lib/paths");
-const { formatLocalDate, shiftDate } = require("../src/lib/dates");
+const { advanceDate, formatLocalDate, shiftDate } = require("../src/lib/dates");
 const { openDatabase } = require("../src/store/db");
 const {
+  archiveTask,
   buildStats,
   createTask,
   generateReview,
@@ -83,6 +84,28 @@ test("createTask and listTasks keep local task metadata", () => {
   });
 });
 
+test("recurring tasks spawn the next occurrence when completed", () => {
+  withTempContext((context) => {
+    const task = createTask(context, {
+      title: "Weekly planning",
+      dueDate: "2026-04-10",
+      priority: "medium",
+      repeatRule: "weekly"
+    });
+
+    const completed = markTaskDone(context, task.id, { completedAt: "2026-04-10T09:00:00.000Z" });
+    if (!completed.spawnedTask) {
+      throw new Error("Expected a follow-up recurring task.");
+    }
+    if (completed.spawnedTask.dueDate !== "2026-04-17") {
+      throw new Error(`Unexpected next due date: ${completed.spawnedTask.dueDate}`);
+    }
+    if (completed.spawnedTask.repeatRule !== "weekly") {
+      throw new Error(`Expected repeat rule to carry forward, received ${completed.spawnedTask.repeatRule}`);
+    }
+  });
+});
+
 test("getTodayTasks returns only today due tasks and high priority open tasks", () => {
   withTempContext((context) => {
     const today = "2026-04-10";
@@ -114,7 +137,7 @@ test("getNextTask prioritizes overdue work first", () => {
   });
 });
 
-test("markTaskDone and rescheduleTask update state transitions", () => {
+test("markTaskDone rescheduleTask and archiveTask update state transitions", () => {
   withTempContext((context) => {
     const task = createTask(context, { title: "Follow up", dueDate: "2026-04-10", priority: "medium" });
     const rescheduled = rescheduleTask(context, task.id, { dueDate: "2026-04-12", changedAt: "2026-04-10T08:00:00.000Z" });
@@ -125,6 +148,16 @@ test("markTaskDone and rescheduleTask update state transitions", () => {
     const completed = markTaskDone(context, task.id, { completedAt: "2026-04-10T10:00:00.000Z" });
     if (completed.status !== "done") {
       throw new Error(`Unexpected status after completion: ${completed.status}`);
+    }
+
+    const archived = archiveTask(context, task.id, { archivedAt: "2026-04-10T12:00:00.000Z" });
+    if (archived.status !== "archived") {
+      throw new Error(`Unexpected status after archive: ${archived.status}`);
+    }
+
+    const archivedList = listTasks(context, { status: "archived" });
+    if (archivedList.length !== 1 || archivedList[0].id !== task.id) {
+      throw new Error("Expected archived task in archived listing.");
     }
   });
 });
@@ -208,39 +241,57 @@ test("buildStats summarizes counts by project and priority", () => {
   });
 });
 
-test("runCli supports add list done and stats flows", async () => {
+test("advanceDate supports daily weekly and monthly rules", () => {
+  if (advanceDate("2026-04-10", "daily") !== "2026-04-11") {
+    throw new Error("Expected daily advance to move by one day.");
+  }
+  if (advanceDate("2026-04-10", "weekly") !== "2026-04-17") {
+    throw new Error("Expected weekly advance to move by seven days.");
+  }
+  if (advanceDate("2026-04-10", "monthly") !== "2026-05-10") {
+    throw new Error("Expected monthly advance to move by one month.");
+  }
+});
+
+test("runCli supports add repeat done archive and stats flows", async () => {
   const projectRoot = createTempProjectRoot();
   const context = createAppContext(projectRoot);
   ensureProjectDirectories(context);
 
   try {
     const addOutput = makeOutputBuffer();
-    await runCli(["add", "--title", "CLI Task", "--project", "study-ops", "--priority", "high"], { context, stdout: addOutput });
-    if (!addOutput.value().includes("Added task 1: CLI Task")) {
+    await runCli(["add", "--title", "CLI Task", "--project", "study-ops", "--priority", "high", "--due", "2026-04-10", "--repeat", "daily"], { context, stdout: addOutput });
+    if (!addOutput.value().includes("Repeat: daily")) {
       throw new Error(`Unexpected add output: ${addOutput.value()}`);
-    }
-
-    const listOutput = makeOutputBuffer();
-    await runCli(["list", "--project", "study-ops", "--status", "open"], { context, stdout: listOutput });
-    if (!listOutput.value().includes("CLI Task")) {
-      throw new Error(`Unexpected list output: ${listOutput.value()}`);
     }
 
     const doneOutput = makeOutputBuffer();
     await runCli(["done", "1"], { context, stdout: doneOutput });
-    if (!doneOutput.value().includes("Completed task 1: CLI Task")) {
+    if (!doneOutput.value().includes("Next Recurring Task: [2] due 2026-04-11")) {
       throw new Error(`Unexpected done output: ${doneOutput.value()}`);
+    }
+
+    const archiveOutput = makeOutputBuffer();
+    await runCli(["archive", "1"], { context, stdout: archiveOutput });
+    if (!archiveOutput.value().includes("Archived task 1: CLI Task")) {
+      throw new Error(`Unexpected archive output: ${archiveOutput.value()}`);
+    }
+
+    const archivedList = makeOutputBuffer();
+    await runCli(["list", "--status", "archived"], { context, stdout: archivedList });
+    if (!archivedList.value().includes("CLI Task")) {
+      throw new Error(`Unexpected archived list output: ${archivedList.value()}`);
     }
 
     const statsOutput = makeOutputBuffer();
     await runCli(["stats"], { context, stdout: statsOutput });
-    if (!statsOutput.value().includes("done: 1")) {
+    if (!statsOutput.value().includes("archived: 1")) {
       throw new Error(`Unexpected stats output: ${statsOutput.value()}`);
     }
 
-    const task = getTask(context, 1);
-    if (task.status !== "done") {
-      throw new Error(`Expected completed status, received ${task.status}`);
+    const task = getTask(context, 2);
+    if (task.status !== "open" || task.repeatRule !== "daily") {
+      throw new Error(`Expected spawned recurring task to stay open, received ${JSON.stringify(task)}`);
     }
   } finally {
     fs.rmSync(projectRoot, { recursive: true, force: true });

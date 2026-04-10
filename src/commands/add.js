@@ -1,12 +1,13 @@
 const { createTask } = require("../store/tasks");
 
-function addCommand({ context, stdout, title, projectName, dueDate, priority }) {
-  const task = createTask(context, { title, projectName, dueDate, priority });
+function addCommand({ context, stdout, title, projectName, dueDate, priority, repeatRule }) {
+  const task = createTask(context, { title, projectName, dueDate, priority, repeatRule });
   stdout.write([
     `Added task ${task.id}: ${task.title}`,
     `Project: ${task.projectName || "unassigned"}`,
     `Due: ${task.dueDate || "none"}`,
     `Priority: ${task.priority}`,
+    `Repeat: ${task.repeatRule || "none"}`,
     `Status: ${task.status}`,
     ""
   ].join("\n"));

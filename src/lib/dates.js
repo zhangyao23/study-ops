@@ -41,7 +41,30 @@ function shiftDate(dateString, deltaDays) {
   return formatLocalDate(date);
 }
 
+function advanceDate(dateString, repeatRule) {
+  const normalized = requireDateString(dateString);
+  const [year, month, day] = normalized.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+
+  switch (String(repeatRule || "").toLowerCase()) {
+    case "daily":
+      date.setDate(date.getDate() + 1);
+      break;
+    case "weekly":
+      date.setDate(date.getDate() + 7);
+      break;
+    case "monthly":
+      date.setMonth(date.getMonth() + 1);
+      break;
+    default:
+      throw new CliError(`Unsupported repeat rule: ${repeatRule}`, 2);
+  }
+
+  return formatLocalDate(date);
+}
+
 module.exports = {
+  advanceDate,
   dayFromIso,
   formatLocalDate,
   isValidDateString,

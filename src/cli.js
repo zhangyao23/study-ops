@@ -2,6 +2,7 @@ const { CliError } = require("./lib/errors");
 const { parseArgs, requireFlag, requirePositional, ensureNoExtraPositionals } = require("./lib/argv");
 const { createAppContext, ensureProjectDirectories } = require("./lib/paths");
 const { addCommand } = require("./commands/add");
+const { archiveCommand } = require("./commands/archive");
 const { listCommand } = require("./commands/list");
 const { todayCommand } = require("./commands/today");
 const { nextCommand } = require("./commands/next");
@@ -15,18 +16,20 @@ function getUsage() {
     "study-ops",
     "",
     "Usage:",
-    "  study-ops add --title <title> [--project <name>] [--due <date>] [--priority low|medium|high]",
-    "  study-ops list [--project <name>] [--status open|done]",
+    "  study-ops add --title <title> [--project <name>] [--due <date>] [--priority low|medium|high] [--repeat daily|weekly|monthly]",
+    "  study-ops list [--project <name>] [--status open|done|archived]",
     "  study-ops today",
     "  study-ops next",
     "  study-ops done <id>",
+    "  study-ops archive <id>",
     "  study-ops reschedule <id> --due <date>",
     "  study-ops review [--date <yyyy-mm-dd>]",
     "  study-ops stats",
     "",
     "Examples:",
     "  node src/index.js add --title \"Write review\" --project research-vault --due 2026-04-10 --priority high",
-    "  node src/index.js today",
+    "  node src/index.js add --title \"Weekly planning\" --due 2026-04-11 --repeat weekly",
+    "  node src/index.js archive 3",
     "  node src/index.js review --date 2026-04-10",
     ""
   ].join("\n");
@@ -55,7 +58,8 @@ async function runCli(argv, options = {}) {
         title: requireFlag(parsed.options.title, "--title", "Use --title to describe the task."),
         projectName: parsed.options.project || null,
         dueDate: parsed.options.due || null,
-        priority: parsed.options.priority || "medium"
+        priority: parsed.options.priority || "medium",
+        repeatRule: parsed.options.repeat || null
       });
     case "list":
       ensureNoExtraPositionals(parsed.positionals);
@@ -74,6 +78,13 @@ async function runCli(argv, options = {}) {
     case "done":
       ensureNoExtraPositionals(parsed.positionals, 1);
       return doneCommand({
+        context,
+        stdout,
+        taskId: requirePositional(parsed.positionals[0], "Task id")
+      });
+    case "archive":
+      ensureNoExtraPositionals(parsed.positionals, 1);
+      return archiveCommand({
         context,
         stdout,
         taskId: requirePositional(parsed.positionals[0], "Task id")
